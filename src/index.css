@@ -11,6 +11,8 @@
   --border: rgba(71, 60, 48, 0.1);
   --border-strong: rgba(71, 60, 48, 0.2);
   --accent: #766451;
+  --highlight: #dcc5af;
+  --accent-soft: rgba(118, 100, 81, 0.1);
   --link: #6d5948;
   --caret: #8a755f;
   --code-bg: rgba(53, 42, 32, 0.055);
@@ -33,7 +35,7 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-:root[data-theme='dark'] {
+:root[data-theme='ink'] {
   --bg: #151310;
   --panel: rgba(26, 23, 20, 0.96);
   --panel-soft: rgba(34, 30, 26, 0.82);
@@ -46,12 +48,60 @@
   --border: rgba(242, 229, 211, 0.07);
   --border-strong: rgba(242, 229, 211, 0.16);
   --accent: #b8a28d;
+  --highlight: #8f7a67;
+  --accent-soft: rgba(184, 162, 141, 0.14);
   --link: #ccb59d;
   --caret: #cbb39b;
   --code-bg: rgba(255, 255, 255, 0.045);
   --shadow: 0 16px 36px rgba(0, 0, 0, 0.2);
   --shadow-focus: 0 18px 42px rgba(0, 0, 0, 0.24);
   color-scheme: dark;
+}
+
+:root[data-theme='lake'] {
+  --bg: #f6f7f2;
+  --panel: rgba(252, 253, 249, 0.92);
+  --panel-soft: rgba(247, 249, 246, 0.82);
+  --panel-hover: rgba(250, 252, 250, 0.99);
+  --panel-focus: rgba(249, 251, 249, 0.99);
+  --text: #2f4858;
+  --heading: #213844;
+  --muted: #70838a;
+  --placeholder: #9aadb1;
+  --border: rgba(47, 72, 88, 0.1);
+  --border-strong: rgba(123, 174, 175, 0.28);
+  --accent: #7baeaf;
+  --highlight: #d98c8c;
+  --accent-soft: rgba(123, 174, 175, 0.12);
+  --link: #5d9193;
+  --caret: #7baeaf;
+  --code-bg: rgba(123, 174, 175, 0.09);
+  --shadow: 0 12px 28px rgba(47, 72, 88, 0.06);
+  --shadow-focus: 0 14px 32px rgba(47, 72, 88, 0.1);
+  color-scheme: light;
+}
+
+:root[data-theme='clay'] {
+  --bg: #faf6f0;
+  --panel: rgba(255, 252, 248, 0.93);
+  --panel-soft: rgba(253, 248, 242, 0.82);
+  --panel-hover: rgba(255, 251, 247, 0.99);
+  --panel-focus: rgba(255, 250, 246, 0.99);
+  --text: #4a3b36;
+  --heading: #352925;
+  --muted: #9a8177;
+  --placeholder: #c0a399;
+  --border: rgba(74, 59, 54, 0.1);
+  --border-strong: rgba(201, 124, 93, 0.28);
+  --accent: #c97c5d;
+  --highlight: #e8b7a6;
+  --accent-soft: rgba(201, 124, 93, 0.12);
+  --link: #b66f54;
+  --caret: #c97c5d;
+  --code-bg: rgba(232, 183, 166, 0.12);
+  --shadow: 0 12px 28px rgba(74, 59, 54, 0.06);
+  --shadow-focus: 0 14px 32px rgba(74, 59, 54, 0.1);
+  color-scheme: light;
 }
 
 * {
@@ -122,5 +172,6 @@ pre {
 }
 
 ::selection {
-  background: rgba(118, 100, 81, 0.18);
+  background: var(--highlight);
+  color: var(--heading);
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { remark } from 'remark'
 import remarkBreaks from 'remark-breaks'
@@ -6,7 +6,26 @@ import remarkGfm from 'remark-gfm'
 import remarkHtml from 'remark-html'
 import './App.css'
 
-type Theme = 'light' | 'dark'
+type Theme = 'mist' | 'ink' | 'lake' | 'clay'
+
+type ThemeOption = {
+  value: Theme
+  label: string
+}
+
+const THEME_OPTIONS: ThemeOption[] = [
+  { value: 'mist', label: '月白' },
+  { value: 'ink', label: '玄墨' },
+  { value: 'lake', label: '青湖' },
+  { value: 'clay', label: '陶砂' },
+]
+
+type PanelSizes = {
+  sidebar: number
+  preview: number
+}
+
+type ResizeHandle = 'sidebar' | 'preview'
 
 type Draft = {
   id: string
@@ -23,6 +42,18 @@ type PersistedDocuments = {
 }
 
 type CopyStatus = 'idle' | 'success' | 'error'
+type AiPolishStatus = 'idle' | 'loading' | 'error'
+
+type DeepSeekChatResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string
+    }
+  }>
+  error?: {
+    message?: string
+  }
+}
 
 type EditorTransformResult = {
   content: string
@@ -50,6 +81,8 @@ const STORAGE_KEYS = {
   content: 'md-editor:content',
   documents: 'md-editor:documents',
   theme: 'md-editor:theme',
+  panelSizes: 'md-editor:panel-sizes',
+  sidebarOpen: 'md-editor:sidebar-open',
 } as const
 
 const DEFAULT_MARKDOWN = `# 极简 Markdown 编辑器
@@ -75,19 +108,81 @@ console.log(message)
 
 function getInitialTheme(): Theme {
   if (typeof window === 'undefined') {
-    return 'light'
+    return 'mist'
   }
 
   try {
     const savedTheme = window.localStorage.getItem(STORAGE_KEYS.theme)
-    if (savedTheme === 'light' || savedTheme === 'dark') {
+    if (savedTheme === 'mist' || savedTheme === 'ink' || savedTheme === 'lake' || savedTheme === 'clay') {
       return savedTheme
     }
+
+    if (savedTheme === 'light') {
+      return 'mist'
+    }
+
+    if (savedTheme === 'dark') {
+      return 'ink'
+    }
   } catch {
-    return 'light'
+    return 'mist'
   }
 
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'ink' : 'mist'
+}
+
+function getInitialSidebarOpen() {
+  if (typeof window === 'undefined') {
+    return true
+  }
+
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEYS.sidebarOpen)
+    if (saved === '0') {
+      return false
+    }
+
+    if (saved === '1') {
+      return true
+    }
+  } catch {
+    return true
+  }
+
+  return true
+}
+
+function getInitialPanelSizes(): PanelSizes {
+  if (typeof window === 'undefined') {
+    return {
+      sidebar: 240,
+      preview: 380,
+    }
+  }
+
+  try {
+    const savedSizes = window.localStorage.getItem(STORAGE_KEYS.panelSizes)
+    if (savedSizes) {
+      const parsed = JSON.parse(savedSizes) as Partial<PanelSizes>
+      const sidebar = typeof parsed.sidebar === 'number' ? parsed.sidebar : 240
+      const preview = typeof parsed.preview === 'number' ? parsed.preview : 380
+
+      return {
+        sidebar: Math.min(360, Math.max(220, sidebar)),
+        preview: Math.min(560, Math.max(320, preview)),
+      }
+    }
+  } catch {
+    return {
+      sidebar: 240,
+      preview: 380,
+    }
+  }
+
+  return {
+    sidebar: 240,
+    preview: 380,
+  }
 }
 
 function createDraft(content = '', timestamp = Date.now(), title = '未命名'): Draft {
@@ -400,10 +495,37 @@ function getExportHtmlDocument(title: string, html: string) {
 </html>`
 }
 
+function formatDraftUpdatedAt(timestamp: number) {
+  const date = new Date(timestamp)
+  const now = new Date()
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+  }
+
+  if (date.toDateString() === yesterday.toDateString()) {
+    return '昨天'
+  }
+
+  return date.toLocaleDateString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+  })
+}
+
 function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
+  const [isSidebarOpen, setIsSidebarOpen] = useState(getInitialSidebarOpen)
+  const [panelSizes, setPanelSizes] = useState<PanelSizes>(getInitialPanelSizes)
   const [documents, setDocuments] = useState<PersistedDocuments>(getInitialDocuments)
   const [copyStatus, setCopyStatus] = useState<CopyStatus>('idle')
+  const [aiPolishStatus, setAiPolishStatus] = useState<AiPolishStatus>('idle')
   const [undoSnapshot, setUndoSnapshot] = useState<UndoSnapshot | null>(null)
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [isSearchOpen, setIsSearchOpen] = useState(false)
@@ -412,6 +534,7 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const titleInputRef = useRef<HTMLInputElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const workspaceRef = useRef<HTMLElement | null>(null)
 
   const activeDraft = useMemo(
     () => documents.drafts.find((draft) => draft.id === documents.activeDraftId) ?? documents.drafts[0],
@@ -458,6 +581,22 @@ function App() {
 
   useEffect(() => {
     try {
+      window.localStorage.setItem(STORAGE_KEYS.sidebarOpen, isSidebarOpen ? '1' : '0')
+    } catch {
+      // Ignore storage failures and keep the sidebar state in memory.
+    }
+  }, [isSidebarOpen])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEYS.panelSizes, JSON.stringify(panelSizes))
+    } catch {
+      // Ignore storage failures and keep the panel sizes in memory.
+    }
+  }, [panelSizes])
+
+  useEffect(() => {
+    try {
       window.localStorage.setItem(STORAGE_KEYS.documents, JSON.stringify(documents))
     } catch {
       // Ignore storage failures and keep the content in memory.
@@ -475,6 +614,18 @@ function App() {
 
     return () => window.clearTimeout(timeoutId)
   }, [copyStatus])
+
+  useEffect(() => {
+    if (aiPolishStatus !== 'error') {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setAiPolishStatus('idle')
+    }, 1500)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [aiPolishStatus])
 
   useEffect(() => {
     if (currentMatchIndex >= searchMatches.length) {
@@ -662,6 +813,26 @@ function App() {
       const selectedBlock = value.slice(lineStart, lineEnd)
       const source = selectedBlock || placeholder
       const lines = source.split('\n')
+      const canUnprefix = selectedBlock.length > 0 && lines.every((line) => line.startsWith(prefix))
+
+      if (canUnprefix) {
+        const replacement = lines.map((line) => line.slice(prefix.length)).join('\n')
+        const removedBeforeSelectionStart = Math.min(prefix.length, selectionStart - lineStart)
+        const removedByLines = lines.reduce((total, line, index) => {
+          if (index === 0) {
+            return total
+          }
+
+          return total + Math.min(prefix.length, line.length)
+        }, 0)
+
+        return {
+          content: `${value.slice(0, lineStart)}${replacement}${value.slice(lineEnd)}`,
+          selectionStart: selectionStart - removedBeforeSelectionStart,
+          selectionEnd: selectionEnd - removedByLines - removedBeforeSelectionStart,
+        }
+      }
+
       const replacement = lines.map((line) => `${prefix}${line || placeholder}`).join('\n')
       const nextValue = `${value.slice(0, lineStart)}${replacement}${value.slice(lineEnd)}`
       const nextSelectionStart = selectionStart + prefix.length
@@ -777,6 +948,48 @@ function App() {
 
     setIsEditingTitle(false)
     setUndoSnapshot(null)
+  }
+
+  const startResizing = (handle: ResizeHandle) => (event: ReactPointerEvent<HTMLDivElement>) => {
+    const workspace = workspaceRef.current
+    if (!workspace || window.innerWidth <= 960) {
+      return
+    }
+
+    event.preventDefault()
+    const { left, width } = workspace.getBoundingClientRect()
+
+    const updateSizes = (clientX: number) => {
+      if (handle === 'sidebar') {
+        const sidebar = Math.min(360, Math.max(220, clientX - left))
+        setPanelSizes((current) => ({
+          ...current,
+          sidebar,
+        }))
+        return
+      }
+
+      const preview = Math.min(560, Math.max(320, left + width - clientX))
+      setPanelSizes((current) => ({
+        ...current,
+        preview,
+      }))
+    }
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      updateSizes(moveEvent.clientX)
+    }
+
+    const handlePointerUp = () => {
+      document.body.style.userSelect = ''
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+    }
+
+    document.body.style.userSelect = 'none'
+    updateSizes(event.clientX)
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
   }
 
   const switchDraft = (draftId: string) => {
@@ -909,6 +1122,88 @@ function App() {
     }
   }
 
+  const preserveEditorSelection = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+  }
+
+  const handleAiPolish = async () => {
+    if (aiPolishStatus === 'loading' || !activeDraft) {
+      return
+    }
+
+    const apiKey = import.meta.env.VITE_DEEPSEEK_API_KEY?.trim()
+    if (!apiKey) {
+      setAiPolishStatus('error')
+      return
+    }
+
+    const editor = document.querySelector<HTMLTextAreaElement>('.editor-input')
+    if (!editor) {
+      setAiPolishStatus('error')
+      return
+    }
+
+    const requestContent = editor.value
+    const selectionStart = editor.selectionStart
+    const selectionEnd = editor.selectionEnd
+    const selectedText = requestContent.slice(selectionStart, selectionEnd)
+
+    if (selectionStart === selectionEnd || selectedText.trim() === '') {
+      setAiPolishStatus('error')
+      return
+    }
+
+    const requestDraftId = activeDraft.id
+    captureUndoSnapshot()
+    setAiPolishStatus('loading')
+
+    try {
+      const response = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          messages: [
+            {
+              role: 'system',
+              content: '你是中文写作润色助手。请在尽量不改变原意、不改变作者语气的前提下，对用户提供的文本做轻度润色。\n\n要求：\n- 保留原作者语气、节奏和口语感\n- 不要写得过度完整、过度工整\n- 不要文学化，不要像公众号文章\n- 不要出现明显 AI 腔、模板感、说教感\n- 允许保留一些不那么完美但真实的表达\n- 尽量少改动，能不改就不改\n- 保持原有 Markdown 结构、段落、列表、标题、引用和代码块不变\n- 只返回润色后的文本，不要解释',
+            },
+            {
+              role: 'user',
+              content: selectedText,
+            },
+          ],
+          stream: false,
+        }),
+      })
+
+      const data = await response.json() as DeepSeekChatResponse
+      const polishedText = data.choices?.[0]?.message?.content?.trim()
+
+      if (!response.ok || !polishedText) {
+        throw new Error(data.error?.message || 'AI polish failed')
+      }
+
+      const latestEditor = document.querySelector<HTMLTextAreaElement>('.editor-input')
+      const latestContent = latestEditor?.value ?? markdown
+      if (documents.activeDraftId !== requestDraftId || latestContent !== requestContent) {
+        setAiPolishStatus('idle')
+        return
+      }
+
+      const nextContent = `${requestContent.slice(0, selectionStart)}${polishedText}${requestContent.slice(selectionEnd)}`
+      const nextSelectionEnd = selectionStart + polishedText.length
+      updateActiveDraft(nextContent)
+      focusEditorSelection(selectionStart, nextSelectionEnd)
+      setAiPolishStatus('idle')
+    } catch {
+      setAiPolishStatus('error')
+    }
+  }
+
   const exportMarkdown = () => {
     const fileName = `${sanitizeFileName(activeDraft?.title || getDraftTitle(markdown))}.md`
     const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
@@ -940,8 +1235,21 @@ function App() {
   }
 
   const handleEditorChange = (value: string) => {
-    if (undoSnapshot) {
-      setUndoSnapshot(null)
+    if (activeDraft && value !== markdown) {
+      const editor = document.querySelector<HTMLTextAreaElement>('.editor-input')
+      const nextSelectionStart = editor?.selectionStart ?? value.length
+      const nextSelectionEnd = editor?.selectionEnd ?? nextSelectionStart
+      const replacedLength = Math.max(0, markdown.length - value.length)
+      const previousSelectionStart = Math.max(0, nextSelectionStart - Math.max(0, value.length - markdown.length))
+      const previousSelectionEnd = Math.min(markdown.length, nextSelectionEnd + replacedLength)
+
+      setUndoSnapshot({
+        draftId: activeDraft.id,
+        content: markdown,
+        selectionStart: previousSelectionStart,
+        selectionEnd: previousSelectionEnd,
+        mode: 'same-draft',
+      })
     }
 
     updateActiveDraft(value)
@@ -1093,6 +1401,13 @@ function App() {
 
   const isEmpty = markdown.trim().length === 0
   const matchCount = searchMatches.length
+  const activeDraftTitle = activeDraft?.title?.trim() || '未命名'
+  const activeDraftUpdatedAt = activeDraft ? formatDraftUpdatedAt(activeDraft.updatedAt) : '--'
+  const saveStatusText = `已自动保存 · ${activeDraftUpdatedAt}`
+  const workspaceStyle = {
+    '--sidebar-width': `${isSidebarOpen ? panelSizes.sidebar : 0}px`,
+    '--preview-width': `${panelSizes.preview}px`,
+  } as CSSProperties
 
   return (
     <div className="app-shell">
@@ -1104,136 +1419,178 @@ function App() {
           className="hidden-file-input"
           onChange={handleFileImport}
         />
-        <div>
-          <p className="eyebrow">Markdown</p>
-          <h1>极简编辑器</h1>
-          <p className="subtitle">左边输入，右边实时预览，内容会自动保存在本地。</p>
+        <div className="app-header-copy">
+          <h1 className="brand-title">虚室</h1>
+          <p className="subtitle brand-quote">虚室生白 吉祥止止</p>
         </div>
 
-        <div className="header-actions">
-          <span className="save-status">已自动保存</span>
-          <button type="button" className="ghost-button" onClick={openFilePicker}>
-            打开 .md
+        <div className="header-actions header-actions-minimal">
+          <button type="button" className="header-link header-link-plain" onClick={() => setIsSidebarOpen((current) => !current)}>
+            文档
           </button>
-          <button type="button" className="ghost-button" onClick={() => void copyMarkdown()}>
-            {copyStatus === 'success' ? '已复制' : copyStatus === 'error' ? '复制失败' : '复制'}
-          </button>
-          <button type="button" className="ghost-button" onClick={exportMarkdown}>
-            导出 .md
-          </button>
-          <button type="button" className="ghost-button" onClick={() => void exportHtml()}>
-            导出 HTML
-          </button>
-          <button
-            type="button"
-            className="theme-toggle"
-            onClick={() => setTheme((current) => (current === 'light' ? 'dark' : 'light'))}
-          >
-            {theme === 'light' ? '深色' : '浅色'}
-          </button>
+          <details className="header-menu">
+            <summary className="header-link header-link-plain">文件</summary>
+            <div className="header-menu-panel">
+              <button type="button" className="header-menu-item" onClick={openFilePicker}>打开 .md</button>
+              <button type="button" className="header-menu-item" onClick={exportMarkdown}>导出 .md</button>
+              <button type="button" className="header-menu-item" onClick={() => void exportHtml()}>导出 HTML</button>
+              <button type="button" className="header-menu-item" onClick={deleteActiveDraft}>删除文档</button>
+            </div>
+          </details>
+          <details className="header-menu">
+            <summary className="header-link header-link-plain">{THEME_OPTIONS.find((option) => option.value === theme)?.label ?? '月白'}</summary>
+            <div className="header-menu-panel">
+              {THEME_OPTIONS.map((option) => (
+                <button key={option.value} type="button" className="header-menu-item" onClick={() => setTheme(option.value)}>
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </details>
         </div>
       </header>
 
-      <main className="editor-layout">
-        <section className="panel">
-          <div className="panel-header panel-header-stack">
-            <div className="panel-header-row">
-              <h2>输入</h2>
-              <span>{markdown.length} 字符</span>
-            </div>
-            <div className="draft-controls">
-              <div className="draft-main">
-                {isEditingTitle ? (
-                  <input
-                    ref={titleInputRef}
-                    type="text"
-                    className="draft-title-input"
-                    value={activeDraft?.title ?? ''}
-                    onChange={(event) => updateActiveDraftTitle(event.target.value)}
-                    onBlur={commitActiveDraftTitle}
-                    onKeyDown={handleTitleKeyDown}
-                    placeholder="输入文档名称"
-                  />
-                ) : (
-                  <button type="button" className="draft-select draft-title-trigger" onClick={startEditingTitle}>
-                    {activeDraft?.title?.trim() || '未命名'}
-                  </button>
-                )}
-                <span className="draft-meta">{documents.drafts.length} 篇草稿</span>
+      <main ref={workspaceRef} className={`workspace-layout ${isSidebarOpen ? '' : 'workspace-layout-sidebar-hidden'}`.trim()} style={workspaceStyle}>
+        {isSidebarOpen ? (
+          <aside className="sidebar panel">
+            <div className="panel-header sidebar-header">
+              <div>
+                <h2>我的文档</h2>
+                <span className="sidebar-meta">{documents.drafts.length} 篇草稿</span>
               </div>
-              <div className="draft-actions">
-                <select
-                  className="draft-select draft-switcher"
-                  value={activeDraft?.id}
-                  onChange={(event) => switchDraft(event.target.value)}
-                >
-                  {documents.drafts.map((draft, index) => (
-                    <option key={draft.id} value={draft.id}>
-                      {draft.title || getDraftTitle(draft.content, index + 1)}
-                    </option>
-                  ))}
-                </select>
-                <button type="button" className="ghost-button" onClick={createNewDraft}>
-                  新建
-                </button>
-                <button type="button" className="ghost-button" onClick={deleteActiveDraft}>
-                  删除当前
-                </button>
-                <button type="button" className="ghost-button" onClick={clearActiveDraft}>
-                  清空当前
-                </button>
+              <button type="button" className="ghost-button sidebar-create" onClick={createNewDraft}>
+                新建
+              </button>
+            </div>
+
+            <div className="sidebar-body">
+              <div className="sidebar-current-draft">
+                <span className="sidebar-current-label">当前文档</span>
+                <strong>{activeDraftTitle}</strong>
+                <span className="sidebar-meta">{saveStatusText}</span>
+              </div>
+
+              <div className="draft-list" aria-label="草稿列表">
+                {documents.drafts.map((draft, index) => {
+                  const draftTitle = draft.title || getDraftTitle(draft.content, index + 1)
+                  const isActive = draft.id === activeDraft?.id
+
+                  return (
+                    <button
+                      key={draft.id}
+                      type="button"
+                      className={`draft-list-item ${isActive ? 'draft-list-item-active' : ''}`}
+                      onClick={() => switchDraft(draft.id)}
+                    >
+                      <span className="draft-list-title">{draftTitle}</span>
+                      <span className="draft-list-meta">{formatDraftUpdatedAt(draft.updatedAt)}</span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
-            {isSearchOpen ? (
-              <div className="search-toolbar">
+          </aside>
+        ) : null}
+
+        {isSidebarOpen ? (
+          <div
+            className="panel-resizer"
+            role="separator"
+            aria-label="调整文档侧边栏宽度"
+            aria-orientation="vertical"
+            onPointerDown={startResizing('sidebar')}
+          />
+        ) : null}
+
+        <section className="panel editor-panel">
+          <div className="panel-header editor-panel-header">
+            <div className="editor-heading">
+              <span className="editor-label">当前文档</span>
+              {isEditingTitle ? (
                 <input
-                  ref={searchInputRef}
+                  ref={titleInputRef}
                   type="text"
-                  className="search-input"
-                  value={searchQuery}
-                  onChange={(event) => {
-                    setSearchQuery(event.target.value)
-                    setCurrentMatchIndex(0)
-                  }}
-                  onKeyDown={handleSearchKeyDown}
-                  placeholder="查找..."
+                  className="draft-title-input editor-title-input"
+                  value={activeDraft?.title ?? ''}
+                  onChange={(event) => updateActiveDraftTitle(event.target.value)}
+                  onBlur={commitActiveDraftTitle}
+                  onKeyDown={handleTitleKeyDown}
+                  placeholder="输入文档名称"
                 />
-                <span className="search-meta">
-                  {matchCount === 0 || searchQuery.trim() === '' ? '0 / 0' : `${currentMatchIndex + 1} / ${matchCount}`}
-                </span>
-                <button type="button" className="ghost-button search-button" onClick={() => goToSearchMatch(currentMatchIndex - 1)} disabled={matchCount === 0}>
-                  上一个
+              ) : (
+                <button type="button" className="editor-title-trigger" onClick={startEditingTitle}>
+                  {activeDraftTitle}
                 </button>
-                <button type="button" className="ghost-button search-button" onClick={() => goToSearchMatch(currentMatchIndex + 1)} disabled={matchCount === 0}>
-                  下一个
+              )}
+            </div>
+
+            <div className="editor-panel-tools" aria-label="Markdown 快捷工具条">
+              <div className="editor-tool-group" aria-label="格式工具">
+                <button type="button" className="ghost-button format-button format-button-symbol" onMouseDown={preserveEditorSelection} onClick={openSearch} aria-label="查找" title="查找">
+                  ⌕
                 </button>
-                <button type="button" className="ghost-button search-button" onClick={closeSearch}>
-                  关闭
+                <button type="button" className="ghost-button format-button format-button-symbol" onMouseDown={preserveEditorSelection} onClick={() => toggleWrapSelection('**', '**', '粗体文本')} aria-label="粗体，可再次点击取消" title="粗体，可再次点击取消">
+                  B
+                </button>
+                <button type="button" className="ghost-button format-button format-button-symbol format-button-italic" onMouseDown={preserveEditorSelection} onClick={() => toggleWrapSelection('*', '*', '斜体文本')} aria-label="斜体，可再次点击取消" title="斜体，可再次点击取消">
+                  I
+                </button>
+                <button type="button" className="ghost-button format-button format-button-symbol" onMouseDown={preserveEditorSelection} onClick={() => toggleWrapSelection('`', '`', '代码')} aria-label="代码，可再次点击取消" title="代码，可再次点击取消">
+                  {'</>'}
+                </button>
+                <button type="button" className="ghost-button format-button format-button-symbol" onMouseDown={preserveEditorSelection} onClick={toggleLinkSelection} aria-label="链接，可再次点击取消" title="链接，可再次点击取消">
+                  ⛓
+                </button>
+                <button type="button" className="ghost-button format-button format-button-symbol" onMouseDown={preserveEditorSelection} onClick={() => prefixSelectedLines('> ', '引用内容')} aria-label="引用，可再次点击取消" title="引用，可再次点击取消">
+                  ❝
                 </button>
               </div>
-            ) : null}
-            <div className="format-toolbar" aria-label="Markdown 快捷格式化工具栏">
-              <button type="button" className="ghost-button format-button" onClick={() => toggleWrapSelection('**', '**', '粗体文本')}>
-                粗体
+              <div className="editor-tool-group editor-tool-group-secondary" aria-label="文档动作">
+                <button type="button" className="ghost-button format-button" onMouseDown={preserveEditorSelection} onClick={() => void handleAiPolish()} disabled={aiPolishStatus === 'loading'}>
+                  {aiPolishStatus === 'loading' ? '润色中...' : aiPolishStatus === 'error' ? '润色失败' : 'AI 润色'}
+                </button>
+                <button type="button" className="ghost-button format-button" onMouseDown={preserveEditorSelection} onClick={undoLastEdit} disabled={!canUndo}>
+                  撤销
+                </button>
+                <button type="button" className="ghost-button format-button" onMouseDown={preserveEditorSelection} onClick={clearActiveDraft}>
+                  清空
+                </button>
+                <button type="button" className="ghost-button format-button" onMouseDown={preserveEditorSelection} onClick={() => void copyMarkdown()}>
+                  {copyStatus === 'success' ? '已复制' : copyStatus === 'error' ? '复制失败' : '复制'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {isSearchOpen ? (
+            <div className="search-toolbar editor-search-toolbar">
+              <input
+                ref={searchInputRef}
+                type="text"
+                className="search-input"
+                value={searchQuery}
+                onChange={(event) => {
+                  setSearchQuery(event.target.value)
+                  setCurrentMatchIndex(0)
+                }}
+                onKeyDown={handleSearchKeyDown}
+                placeholder="查找当前文档..."
+              />
+              <span className="search-meta">
+                {matchCount === 0 || searchQuery.trim() === '' ? '0 / 0' : `${currentMatchIndex + 1} / ${matchCount}`}
+              </span>
+              <button type="button" className="ghost-button search-button" onClick={() => goToSearchMatch(currentMatchIndex - 1)} disabled={matchCount === 0}>
+                上一个
               </button>
-              <button type="button" className="ghost-button format-button" onClick={() => toggleWrapSelection('*', '*', '斜体文本')}>
-                斜体
+              <button type="button" className="ghost-button search-button" onClick={() => goToSearchMatch(currentMatchIndex + 1)} disabled={matchCount === 0}>
+                下一个
               </button>
-              <button type="button" className="ghost-button format-button" onClick={() => toggleWrapSelection('`', '`', '代码')}>
-                代码
-              </button>
-              <button type="button" className="ghost-button format-button" onClick={toggleLinkSelection}>
-                链接
-              </button>
-              <button type="button" className="ghost-button format-button" onClick={() => prefixSelectedLines('> ', '引用内容')}>
-                引用
-              </button>
-              <button type="button" className="ghost-button format-button" onClick={undoLastEdit} disabled={!canUndo}>
-                撤销
+              <button type="button" className="ghost-button search-button" onClick={closeSearch}>
+                关闭
               </button>
             </div>
-            <p className="shortcut-hint">Cmd/Ctrl+F 查找 · Tab 缩进 · Cmd/Ctrl+B 粗体 · Cmd/Ctrl+K 链接 · Cmd/Ctrl+Z 撤销 · Cmd/Ctrl+S 导出</p>
-          </div>
+          ) : null}
+
           <textarea
             className="editor-input"
             value={markdown}
@@ -1244,15 +1601,25 @@ function App() {
             spellCheck="false"
           />
           <div className="editor-statusbar">
+            <span>{saveStatusText}</span>
             <span>{markdown.length} 字符</span>
             <span>{lineCount} 行</span>
+            <span className="shortcut-hint">Cmd/Ctrl+F 查找 · Tab 缩进 · Cmd/Ctrl+B 粗体 · Cmd/Ctrl+K 链接 · Cmd/Ctrl+Z 撤销 · Cmd/Ctrl+S 导出</span>
           </div>
         </section>
 
-        <section className="panel">
-          <div className="panel-header panel-header-minimal">
+        <div
+          className="panel-resizer"
+          role="separator"
+          aria-label="调整预览区宽度"
+          aria-orientation="vertical"
+          onPointerDown={startResizing('preview')}
+        />
+
+        <section className="panel preview-panel">
+          <div className="panel-header panel-header-minimal preview-panel-header">
             <h2>预览</h2>
-            <span>{activeDraft?.title?.trim() || '未命名'}</span>
+            <span>{activeDraftTitle}</span>
           </div>
           <div
             className={`preview ${isEmpty ? 'preview-empty' : ''}`}
